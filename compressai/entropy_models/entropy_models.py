@@ -209,9 +209,6 @@ class EntropyModel(nn.Module):
         """
         symbols = self.quantize(inputs, "symbols", means)
 
-        if len(inputs.size()) != 4:
-            raise ValueError("Invalid `inputs` size. Expected a 4-D tensor.")
-
         if inputs.size() != indexes.size():
             raise ValueError("`inputs` and `indexes` should have the same size.")
 
@@ -247,20 +244,9 @@ class EntropyModel(nn.Module):
         if not len(strings) == indexes.size(0):
             raise ValueError("Invalid strings or indexes parameters")
 
-        if len(indexes.size()) != 4:
-            raise ValueError("Invalid `indexes` size. Expected a 4-D tensor.")
-
         self._check_cdf_size()
         self._check_cdf_length()
         self._check_offsets_size()
-
-        if means is not None:
-            if means.size()[:-2] != indexes.size()[:-2]:
-                raise ValueError("Invalid means or indexes parameters")
-            if means.size() != indexes.size() and (
-                means.size(2) != 1 or means.size(3) != 1
-            ):
-                raise ValueError("Invalid means parameters")
 
         cdf = self._quantized_cdf
         outputs = cdf.new(indexes.size())
@@ -344,7 +330,6 @@ class EntropyBottleneck(EntropyModel):
             return False
 
         medians = self.quantiles[:, 0, 1]
-
         minima = medians - self.quantiles[:, 0, 0]
         minima = torch.ceil(minima).int()
         minima = torch.clamp(minima, min=0)
@@ -464,20 +449,28 @@ class EntropyBottleneck(EntropyModel):
 
     @staticmethod
     def _build_indexes(size):
-        N, C, H, W = size
-        indexes = torch.arange(C).view(1, -1, 1, 1)
+        view_shape = [1 for i in size]
+        view_shape[1] = size[1]
+        indexes = torch.arange(size[1]).view(view_shape)
         indexes = indexes.int()
-        return indexes.repeat(N, 1, H, W)
+        repeat_shape = [i for i in size]
+        repeat_shape[1] = 1
+        return indexes.repeat(repeat_shape)
 
     def compress(self, x):
         indexes = self._build_indexes(x.size())
-        medians = self._get_medians().detach().expand(x.size(0), -1, 1, 1)
+        expand_size = [1 for i in x.size()]
+        expand_size[:2] = x.size()[:2]
+        medians = self._get_medians().detach().squeeze().repeat(expand_size[0], 1).view(expand_size)
         return super().compress(x, indexes, medians)
 
     def decompress(self, strings, size):
-        output_size = (len(strings), self._quantized_cdf.size(0), size[0], size[1])
+        output_size = [len(strings), self._quantized_cdf.size(0)]
+        output_size.extend(size)
         indexes = self._build_indexes(output_size).to(self._quantized_cdf.device)
-        medians = self._get_medians().detach().expand(len(strings), -1, 1, 1)
+        expand_size = output_size[:2]
+        expand_size.extend([1 for i in size])
+        medians = self._get_medians().detach().squeeze().repeat(expand_size[0], 1).view(expand_size)
         return super().decompress(strings, indexes, medians)
 
 
